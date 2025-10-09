@@ -137,7 +137,7 @@ try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     WEATHER_API_KEY = st.secrets.get("PIRATE_WEATHER_API_KEY", "")
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
 except:
     st.error("🔑 Please add GEMINI_API_KEY to Streamlit secrets")
     st.stop()
@@ -646,4 +646,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
