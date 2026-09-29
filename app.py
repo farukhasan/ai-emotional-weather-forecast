@@ -136,8 +136,9 @@ if 'generated_leave_mail' not in st.session_state:
 try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     WEATHER_API_KEY = st.secrets.get("PIRATE_WEATHER_API_KEY", "")
+
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-flash-latest')
+    model = genai.GenerativeModel("gemini-3.8-flash")
 except:
     st.error("🔑 Please add GEMINI_API_KEY to Streamlit secrets")
     st.stop()
@@ -146,7 +147,7 @@ def get_weather_tomorrow():
     """Get tomorrow's weather forecast"""
     try:
         if WEATHER_API_KEY:
-            url = f"https://api.pirateweather.net/forecast/{WEATHER_API_KEY}/23.8103,90.4125"
+            url = f"https://api.pirateweather.net/forecast/{WEATHER_API_KEY}/49.2488,-122.9805"
             response = requests.get(url, timeout=3)
             data = response.json()
             tomorrow = data["daily"]["data"][1] if "daily" in data else data["currently"]
