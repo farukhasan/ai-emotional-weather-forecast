@@ -532,7 +532,7 @@ def main():
         }}
     </style>
     <div style="background: #f8f9fa; border-radius: 12px; padding: 1.5rem; margin: 1rem 0; color: #1a1a1a; text-align: center; border: 1px solid #dee2e6; font-family: Lexend Deca, sans-serif;">
-        <h3 style="margin: 0; color: #1a1a1a; font-weight: 600; font-family: Lexend Deca, sans-serif;">Tomorrow's Weather in Dhaka</h3>
+        <h3 style="margin: 0; color: #1a1a1a; font-weight: 600; font-family: Lexend Deca, sans-serif;">Tomorrow's Weather in Burnaby</h3>
         <div style="font-size: 2rem; margin: 0.5rem 0;" class="{animation_class}">{weather_icon}</div>
         <p style="font-size: 1.1rem; margin: 0.5rem 0; color: #1a1a1a; font-family: Lexend Deca, sans-serif;">
             <strong style="color: #1a1a1a; font-family: Lexend Deca, sans-serif;">{weather['temp_high']}°C / {weather['temp_low']}°C</strong><br>
