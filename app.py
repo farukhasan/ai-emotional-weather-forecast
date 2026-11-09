@@ -1,4 +1,4 @@
-"""Should I take tomorrow off? (fast version, PhD student in Burnaby)."""
+"""Should I take tomorrow off?"""
 import html
 import json
 
