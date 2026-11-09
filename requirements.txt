@@ -3,3 +3,6 @@ google-generativeai
 plotly
 pandas
 requests
+streamlit
+requests
+google-genai
