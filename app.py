@@ -133,6 +133,8 @@ def ask_gemini(d, w):
                 msg = str(e)
                 if "404" in msg or "NOT_FOUND" in msg:
                     break
+                if any(k in msg for k in ("503", "500", "UNAVAILABLE", "INTERNAL", "DEADLINE", "high demand", "timed out", "Timeout")):
+                    break
                 if "429" in msg or "quota" in msg.lower():
                     raise
                 if "thinking" in msg.lower() or "INVALID_ARGUMENT" in msg or isinstance(e, (TypeError, ValueError)):
