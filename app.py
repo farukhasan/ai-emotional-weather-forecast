@@ -1,653 +1,310 @@
-import streamlit as st
-import streamlit.components.v1 as components
-import google.generativeai as genai
-import pandas as pd
-import plotly.graph_objects as go
-import requests
-from datetime import datetime, timedelta
+"""Should I take tomorrow off? (fast version, PhD student in Burnaby)."""
+import html
 import json
-import time
 
-# Page config
-st.set_page_config(
-    page_title="Should I Take Leave Tomorrow?",
-    page_icon="🌅",
-    layout="centered"
-)
+import requests
+import streamlit as st
+from google import genai
+from google.genai import types
 
-# Simple CSS with dark text on white background
+# Flash-Lite with thinking switched off is the fastest option on the free tier.
+MODEL = "gemini-2.5-flash-lite"
+LAT, LON, CITY = 49.2488, -122.9805, "Burnaby"
+
+TYPES = {
+    "full_day_leave": ("Take the day off", "#c0392b"),
+    "half_day_leave": ("Take a half day / finish early", "#d68910"),
+    "work_with_care": ("Work, but go easy on yourself", "#2e86c1"),
+    "work_normally": ("Work as normal", "#1e8449"),
+}
+OFF = ("full_day_leave", "half_day_leave")
+ICONS = {
+    "rain": "🌧️", "snow": "❄️", "sleet": "🌨️", "wind": "💨", "fog": "🌫️",
+    "cloudy": "☁️", "partly-cloudy-day": "⛅", "partly-cloudy-night": "⛅",
+    "clear-day": "☀️", "clear-night": "🌙",
+}
+SYMPTOM_PENALTY = {
+    "None": 0, "Mild tension/headache": 5,
+    "Moderate discomfort": 12, "Severe symptoms": 25,
+}
+
+st.set_page_config(page_title="Should I Take Tomorrow Off?", page_icon="🌅", layout="centered")
+
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Lexend+Deca:wght@300;400;500;600;700&display=swap');
-    
-    .stApp {
-        background-color: white;
-        font-family: 'Lexend Deca', sans-serif;
-    }
-    
-    .main-title {
-        font-size: 2.5rem;
-        font-weight: 600;
-        text-align: center;
-        color: #1a1a1a;
-        margin-bottom: 0.5rem;
-        font-family: 'Lexend Deca', sans-serif;
-    }
-    
-    .subtitle {
-        font-size: 1.2rem;
-        text-align: center;
-        color: #666;
-        margin-bottom: 3rem;
-        font-family: 'Lexend Deca', sans-serif;
-    }
-    
-    .decision-card {
-        background: #007aff;
-        border-radius: 16px;
-        padding: 2rem;
-        color: white;
-        text-align: center;
-        margin: 2rem 0;
-        box-shadow: 0 4px 20px rgba(0, 122, 255, 0.15);
-    }
-    
-    .recommendation {
-        background: #f8f9fa;
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        color: #1a1a1a;
-        border: 1px solid #dee2e6;
-        font-weight: 500;
-    }
-    
-    .do-item {
-        background: #d4edda;
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        color: #1a1a1a;
-        font-weight: 500;
-        border-left: 3px solid #28a745;
-    }
-    
-    .dont-item {
-        background: #f8d7da;
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        color: #1a1a1a;
-        font-weight: 500;
-        border-left: 3px solid #dc3545;
-    }
-    
-    .weather-card {
-        background: #f8f9fa;
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        color: #1a1a1a;
-        text-align: center;
-        border: 1px solid #dee2e6;
-    }
-    
-    .stButton > button {
-        width: 100%;
-        background: #007aff;
-        color: white;
-        border: none;
-        border-radius: 12px;
-        padding: 1rem;
-        font-weight: 600;
-        font-size: 1rem;
-        margin-top: 1.5rem;
-        font-family: 'Lexend Deca', sans-serif;
-    }
-    
-    /* Fix for input labels to be black */
-    .stSelectbox label,
-    .stSlider label,
-    .stSelectbox > div > label,
-    .stSlider > div > label,
-    label[data-testid="stWidgetLabel"] {
-        color: #1a1a1a !important;
-        font-family: 'Lexend Deca', sans-serif !important;
-        font-weight: 500 !important;
-    }
-    
-    /* Additional targeting for labels */
-    .stSelectbox > label,
-    .stSlider > label {
-        color: #1a1a1a !important;
-    }
+@import url('https://fonts.googleapis.com/css2?family=Lexend+Deca:wght@400;500;600&display=swap');
+.stApp {background:white; font-family:'Lexend Deca',sans-serif;}
+label, [data-testid="stWidgetLabel"] p {color:#1a1a1a !important; font-weight:500 !important;}
+.ttl {font-size:2.2rem; font-weight:600; text-align:center; color:#1a1a1a; margin:0;}
+.sub {text-align:center; color:#666; margin:.3rem 0 1.5rem;}
+.card {background:#f8f9fa; border:1px solid #dee2e6; border-radius:12px; padding:1.1rem; margin:.8rem 0; color:#1a1a1a; text-align:center;}
+.hero {border-radius:16px; padding:1.6rem; color:#fff; text-align:center; margin:1.2rem 0;}
+.hero-t {font-size:1.6rem; font-weight:600; color:#fff;}
+.hero-s {margin-top:.6rem; color:#fff; opacity:.92;}
+.hero-c {margin-top:.6rem; color:#fff; opacity:.8; font-size:.85rem;}
+.hd {color:#1a1a1a; font-weight:600; margin:.4rem 0 0;}
+.do, .dont {border-radius:8px; padding:.8rem 1rem; margin:.4rem 0; color:#1a1a1a; font-weight:500;}
+.do {background:#d4edda; border-left:3px solid #28a745;}
+.dont {background:#f8d7da; border-left:3px solid #dc3545;}
+.foot {text-align:center; color:#666; font-size:.85rem; padding:1rem;}
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state
-if 'assessments' not in st.session_state:
-    st.session_state.assessments = []
-if 'analysis' not in st.session_state:
-    st.session_state.analysis = None
-if 'generated_leave_mail' not in st.session_state:
-    st.session_state.generated_leave_mail = None
+esc = html.escape
 
-# API Configuration
-try:
-    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-    WEATHER_API_KEY = st.secrets.get("PIRATE_WEATHER_API_KEY", "")
 
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-3.7-flash")
-except:
-    st.error("🔑 Please add GEMINI_API_KEY to Streamlit secrets")
-    st.stop()
-
-def get_weather_tomorrow():
-    """Get tomorrow's weather forecast"""
+# ---------- Gemini client (created once per server, not per rerun) ----------
+@st.cache_resource
+def get_client():
     try:
-        if WEATHER_API_KEY:
-            url = f"https://api.pirateweather.net/forecast/{WEATHER_API_KEY}/49.2488,-122.9805"
-            response = requests.get(url, timeout=3)
-            data = response.json()
-            tomorrow = data["daily"]["data"][1] if "daily" in data else data["currently"]
-            return {
-                "temp_high": round((tomorrow.get("temperatureHigh", 85) - 32) * 5/9),
-                "temp_low": round((tomorrow.get("temperatureLow", 75) - 32) * 5/9),
-                "condition": tomorrow.get("summary", "Partly cloudy"),
-                "rain_chance": round(tomorrow.get("precipProbability", 0) * 100)
-            }
-    except:
-        pass
-    
-    return {
-        "temp_high": 30,
-        "temp_low": 24,
-        "condition": "Partly cloudy",
-        "rain_chance": 20
-    }
-
-def generate_leave_mail():
-    """Generate a concise, first-person leave mail with a personal or access-related reason."""
-
-    # Personal medical reasons (first-person only)
-    medical_reasons = [
-        "acute dysentery",
-        "severe migraine",
-        "high fever",
-        "acute food poisoning",
-        "debilitating headache"
-    ]
-
-    # Non-medical personal access issues near home
-    access_reasons = [
-        "a blockade near my house due to a student movement",
-        "a political demonstration blocking the roads in my neighborhood",
-        "major road construction in front of my house causing access issues",
-        "urgent utility maintenance in my building causing disruptions"
-    ]
-
-    # Pick one reason at random each time
-    import random
-    all_reasons = medical_reasons + access_reasons
-    chosen_reason = random.choice(all_reasons)
-
-    prompt = f"""
-Generate a professional, concise leave application email for one day of leave tomorrow.
-Use first-person and the following single reason: {chosen_reason}.
-
-Requirements:
-- 2–3 sentences max
-- Subject line must be: "Subject: Leave Application for Tomorrow"
-- Keep the tone polite and professional
-- Do not mention family members; it is my personal situation
-- Do not add any text outside the email
-"""
-
-    try:
-        response = model.generate_content(prompt)
-        text = (response.text or "").strip()
-        # Ensure 'Best regards' is present
-        if text:
-            if "best regards".lower() not in text.lower():
-                # Add 'Best regards' before [Your Name] or at the end
-                if "[Your Name]" in text:
-                    text = text.replace("[Your Name]", "Best regards,\n[Your Name]")
-                else:
-                    text = text.strip() + "\n\nBest regards,\n[Your Name]"
-            return text
-        else:
-            return f"Subject: Leave Application for Tomorrow\n\nDear Manager,\n\nI would like to request leave for tomorrow due to {chosen_reason}. I will ensure any urgent tasks are handed over and remain reachable for critical matters if needed.\n\nThank you for your understanding.\n\nBest regards,\n[Your Name]"
+        return genai.Client(
+            api_key=st.secrets["GEMINI_API_KEY"],
+            http_options=types.HttpOptions(timeout=20_000),  # ms; fail fast to fallback
+        )
     except Exception:
-        # Fallback email (deterministic, still varies via chosen_reason)
-        return f"""Subject: Leave Application for Tomorrow
+        return None
 
-Dear Manager,
 
-I would like to request leave for tomorrow due to {chosen_reason}. I will ensure urgent items are handed over today and remain reachable for any critical matters if needed.
-
-Thank you for your understanding.
-
-Best regards,
-[Your Name]"""
-
-def analyze_leave_decision(data, weather):
-    """Enhanced AI analysis for leave recommendation"""
-    
-    prompt = f"""You are an intelligent work-life balance advisor. Analyze if this person should take leave tomorrow based on their mental state, workload, and external factors.
-
-CURRENT STATE:
-- Overall feeling: {data['mood']}
-- Energy level: {data['energy']}/10
-- Sleep quality: {data['sleep']}/10
-- Work pressure: {data['work_pressure']}/10
-- Personal life stress: {data['personal_stress']}/10
-- Physical symptoms: {data['physical_symptoms']}
-- Last break taken: {data['last_break']}
-- Tomorrow's work importance: {data['tomorrow_importance']}
-- Support system: {data['support']}
-- Leave balance remaining: {data['leave_balance']}
-
-WEATHER TOMORROW: {weather['temp_high']}°C/{weather['temp_low']}°C, {weather['condition']}, {weather['rain_chance']}% rain chance
-
-DECISION FRAMEWORK:
-- Full Day Leave: For burnout, severe stress, or mental health crisis
-- Half Day/Early Leave: For moderate stress with manageable work
-- Work Normally: For good mental state with support strategies
-- Consider weather impact on mood and recovery opportunities
-- Consider leave balance - if low, be more conservative
-
-Respond in this EXACT JSON format (ensure valid JSON):
-{{
-    "wellness_score": 45,
-    "leave_type": "full_day_leave",
-    "confidence": 82,
-    "main_reason": "Primary reason for recommendation",
-    "decision_summary": "Brief 2-sentence explanation of the decision",
-    "work_activities": ["3 things to do if working"],
-    "work_avoid": ["3 things to avoid if working"],
-    "leave_activities": ["4 recovery activities for leave day"],
-    "leave_avoid": ["3 things to avoid during leave"],
-    "warning_signs": ["signs requiring immediate attention"],
-    "recovery_estimate": "Expected recovery timeframe"
-}}
-
-Leave types: "full_day_leave", "half_day_leave", "work_with_care", "work_normally"
-
-SCORING GUIDE:
-- 80-100: Excellent state, work normally
-- 60-79: Good state, minor support needed
-- 40-59: Moderate stress, consider half day
-- 20-39: High stress, likely needs full day
-- 0-19: Crisis level, definitely needs leave
-
-Weather considerations:
-- Rainy/gloomy: May worsen mood, indoor recovery activities
-- Sunny/pleasant: Good for outdoor recovery, mood boost
-- Extreme weather: Affects commute stress and recovery options
-
-Leave balance considerations:
-- High balance (>15 days): More flexible with recommendations
-- Medium balance (5-15 days): Moderate recommendations
-- Low balance (<5 days): Conservative recommendations"""
-
-    try:
-        response = model.generate_content(prompt)
-        response_text = response.text.strip()
-        
-        # Clean up the response text
-        if response_text.startswith('```json'):
-            response_text = response_text.replace('```json', '').replace('```', '').strip()
-        
-        result = json.loads(response_text)
-        
-        # Validate required fields
-        required_fields = ['wellness_score', 'leave_type', 'confidence', 'main_reason', 'decision_summary']
-        for field in required_fields:
-            if field not in result:
-                raise ValueError(f"Missing required field: {field}")
-        
-        return result
-        
-    except Exception as e:
-        error_text = str(e)
-        if '429' in error_text or 'quota' in error_text.lower():
-            st.info("Rate limit reached for AI analysis – using fallback recommendation. Please try again later.")
-        else:
-            st.warning(f"AI analysis failed, using fallback logic: {error_text}")
-        
-        # Enhanced fallback logic
-        stress_factor = (data['work_pressure'] + data['personal_stress']) / 2
-        energy_factor = data['energy']
-        sleep_factor = data['sleep']
-        
-        # Parse leave balance
-        leave_balance_text = data['leave_balance']
-        if '20+' in leave_balance_text:
-            leave_days = 20
-        elif '15-20' in leave_balance_text:
-            leave_days = 15
-        elif '10-15' in leave_balance_text:
-            leave_days = 10
-        elif '5-10' in leave_balance_text:
-            leave_days = 5
-        else:
-            leave_days = 2
-        
-        # Calculate wellness score with leave balance consideration
-        wellness = 100 - (stress_factor * 10) - ((10 - energy_factor) * 8) - ((10 - sleep_factor) * 6)
-        
-        # Adjust based on leave balance
-        if leave_days < 5:
-            wellness += 10  # More conservative if low leave balance
-        elif leave_days > 15:
-            wellness -= 5   # More flexible if high leave balance
-        
-        wellness = max(5, min(100, int(wellness)))
-        
-        # Decision logic based on multiple factors
-        if wellness < 25 or (stress_factor > 8 and energy_factor < 3):
-            leave_type = "full_day_leave"
-            decision = "Your stress levels are critically high and energy is depleted. A full day of rest is essential to prevent burnout."
-        elif wellness < 45 or (stress_factor > 6 and sleep_factor < 5):
-            leave_type = "half_day_leave"
-            decision = "Moderate stress levels suggest you need some recovery time. Consider taking half day or leaving early."
-        elif wellness < 65:
-            leave_type = "work_with_care"
-            decision = "You can work tomorrow but need to be very careful with your energy and stress management."
-        else:
-            leave_type = "work_normally"
-            decision = "You're in good shape to work tomorrow. Focus on maintaining your current positive state."
-        
-        return {
-            "wellness_score": wellness,
-            "leave_type": leave_type,
-            "confidence": 75,
-            "main_reason": f"Stress level {stress_factor:.1f}/10, Energy {energy_factor}/10, Leave balance: {leave_days} days",
-            "decision_summary": decision,
-            "work_activities": ["Take regular breaks every hour", "Prioritize only essential tasks", "Stay hydrated and eat well"],
-            "work_avoid": ["Overtime or extra commitments", "Perfectionism on minor tasks", "Skipping lunch break"],
-            "leave_activities": ["Sleep until naturally awake", "Light exercise or walk", "Do something you enjoy", "Connect with supportive people"],
-            "leave_avoid": ["Checking work emails", "Intensive physical activities", "Making major decisions"],
-            "warning_signs": ["Panic attacks", "Complete inability to focus", "Persistent physical symptoms"],
-            "recovery_estimate": "1-3 days with proper rest"
-        }
-
-def render_analysis_ui(analysis, leave_mail):
-    # Display results
-    leave_type_map = {
-        "full_day_leave": ("Take Full Day Off", "#e74c3c"),
-        "half_day_leave": ("Take Half Day / Leave Early", "#f39c12"),
-        "work_with_care": ("Work With Extra Self-Care", "#f1c40f"),
-        "work_normally": ("Work Normally", "#27ae60")
-    }
-    decision_text, decision_color = leave_type_map.get(analysis['leave_type'], ("Work With Care", "#007aff"))
-
-    # Decision card with inline styles
-    st.markdown(f"""
-    <div style="background: #007aff; border-radius: 16px; padding: 2rem; color: white; text-align: center; margin: 2rem 0; box-shadow: 0 4px 20px rgba(0, 122, 255, 0.15); font-family: Lexend Deca, sans-serif;">
-        <h2 style="margin: 0; font-weight: 600; color: white; font-family: Lexend Deca, sans-serif;">{decision_text}</h2>
-        <p style="font-size: 1.1rem; opacity: 0.9; margin: 1rem 0; color: white; font-family: Lexend Deca, sans-serif;">{analysis['decision_summary']}</p>
-        <p style="font-size: 0.9rem; opacity: 0.8; color: white; font-family: Lexend Deca, sans-serif;">Confidence: {analysis['confidence']}%</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Recommendations based on decision
-    col1, col2 = st.columns(2)
-    if analysis['leave_type'] in ['full_day_leave', 'half_day_leave']:
-        with col1:
-            st.markdown('<p style="color: #1a1a1a; font-family: Lexend Deca, sans-serif; font-weight: 600;">Recovery Activities:</p>', unsafe_allow_html=True)
-            for item in analysis.get('leave_activities', []):
-                st.markdown(f'<div style="background: #d4edda; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; color: #1a1a1a; font-weight: 500; border-left: 3px solid #28a745; font-family: Lexend Deca, sans-serif;">{item}</div>', unsafe_allow_html=True)
-        with col2:
-            st.markdown('<p style="color: #1a1a1a; font-family: Lexend Deca, sans-serif; font-weight: 600;">Avoid During Leave:</p>', unsafe_allow_html=True)
-            for item in analysis.get('leave_avoid', []):
-                st.markdown(f'<div style="background: #f8d7da; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; color: #1a1a1a; font-weight: 500; border-left: 3px solid #dc3545; font-family: Lexend Deca, sans-serif;">{item}</div>', unsafe_allow_html=True)
-    else:
-        with col1:
-            st.markdown('<p style="color: #1a1a1a; font-family: Lexend Deca, sans-serif; font-weight: 600;">If You Work Tomorrow:</p>', unsafe_allow_html=True)
-            for item in analysis.get('work_activities', []):
-                st.markdown(f'<div style="background: #d4edda; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; color: #1a1a1a; font-weight: 500; border-left: 3px solid #28a745; font-family: Lexend Deca, sans-serif;">{item}</div>', unsafe_allow_html=True)
-        with col2:
-            st.markdown('<p style="color: #1a1a1a; font-family: Lexend Deca, sans-serif; font-weight: 600;">Avoid While Working:</p>', unsafe_allow_html=True)
-            for item in analysis.get('work_avoid', []):
-                st.markdown(f'<div style="background: #f8d7da; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; color: #1a1a1a; font-weight: 500; border-left: 3px solid #dc3545; font-family: Lexend Deca, sans-serif;">{item}</div>', unsafe_allow_html=True)
-
-    # Warning signs and recovery time
-    if analysis.get('warning_signs'):
-        st.markdown(f"""
-        <div style="background: #f8f9fa; border-radius: 12px; padding: 1.5rem; margin: 1rem 0; color: #1a1a1a; border: 1px solid #dee2e6; font-weight: 500; font-family: Lexend Deca, sans-serif;">
-            <strong style="color: #1a1a1a; font-family: Lexend Deca, sans-serif;">Watch for these warning signs:</strong><br>
-            {' • '.join(analysis['warning_signs'])}
-        </div>
-        """, unsafe_allow_html=True)
-
-    if analysis.get('recovery_estimate'):
-        st.markdown(f"""
-        <div style="background: #f8f9fa; border-radius: 12px; padding: 1.5rem; margin: 1rem 0; color: #1a1a1a; border: 1px solid #dee2e6; font-weight: 500; font-family: Lexend Deca, sans-serif;">
-            <strong style="color: #1a1a1a; font-family: Lexend Deca, sans-serif;">Expected recovery time:</strong> {analysis['recovery_estimate']}
-        </div>
-        """, unsafe_allow_html=True)
-
-    # AI Generated Leave Mail (use provided leave_mail)
-    if analysis['leave_type'] in ['full_day_leave', 'half_day_leave'] and leave_mail:
-        st.markdown('<h4 style="color: #1a1a1a; font-family: Lexend Deca, sans-serif; font-weight: 600; margin-top: 2rem;">📧 AI-Generated Leave Application</h4>', unsafe_allow_html=True)
-        st.markdown(f"""
-        <div style="background: #f8f9fa; border-radius: 12px; padding: 1.5rem; margin: 1rem 0; border: 1px solid #dee2e6; font-family: 'Courier New', monospace; font-size: 0.9rem; color: #1a1a1a; white-space: pre-line;">
-{leave_mail}
-        </div>
-        """, unsafe_allow_html=True)
-        render_copy_button(leave_mail)
-
-def render_copy_button(text_to_copy: str) -> None:
-    safe_text = json.dumps(text_to_copy)
-    components.html(
-        f"""
-        <div>
-          <button id=\"copyBtn\" style=\"background:#007aff;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-weight:600;cursor:pointer;\">📋 Copy Email</button>
-          <span id=\"copyStatus\" style=\"margin-left:8px;color:#1a1a1a;font-size:0.9rem;\"></span>
-        </div>
-        <script>
-          const text = {safe_text};
-          const btn = document.getElementById('copyBtn');
-          const status = document.getElementById('copyStatus');
-          btn.addEventListener('click', async () => {{
-            try {{
-              await navigator.clipboard.writeText(text);
-              status.textContent = 'Copied!';
-              setTimeout(() => status.textContent = '', 2000);
-            }} catch (e) {{
-              status.textContent = 'Copy failed. Please select and copy manually.';
-            }}
-          }});
-        </script>
-        """,
-        height=60,
+# ---------- Weather (cached 30 min; failures are not cached) ----------
+@st.cache_data(ttl=1800, show_spinner=False)
+def _fetch_weather(key):
+    r = requests.get(
+        f"https://api.pirateweather.net/forecast/{key}/{LAT},{LON}",
+        params={"units": "si", "exclude": "minutely,hourly,alerts,currently"},
+        timeout=(2, 3),
     )
+    r.raise_for_status()
+    d = r.json()["daily"]["data"][1]  # index 0 = today, 1 = tomorrow
+    return {
+        "high": round(d.get("temperatureHigh", d.get("temperatureMax", 0))),
+        "low": round(d.get("temperatureLow", d.get("temperatureMin", 0))),
+        "summary": d.get("summary", ""),
+        "rain": round(d.get("precipProbability", 0) * 100),
+        "icon": ICONS.get(d.get("icon"), "🌤️"),
+    }
+
+
+def get_weather():
+    try:
+        key = st.secrets.get("PIRATE_WEATHER_API_KEY", "")
+        return _fetch_weather(key) if key else None
+    except Exception:
+        return None
+
+
+# ---------- Analysis: ONE Gemini call returns the verdict and the email ----------
+def build_prompt(d, w):
+    wx = f"{w['high']}/{w['low']}°C, {w['summary']}, {w['rain']}% precipitation" if w else "unknown"
+    name = d["name"] or "[Your Name]"
+    return f"""Advise a PhD student on whether to take tomorrow off. Practical, kind, concise. Not medical advice.
+
+State: mood={d['mood']}; energy={d['energy']}/10; sleep={d['sleep']}/10; workload pressure={d['work']}/10; personal stress={d['stress']}/10; symptoms={d['symptoms']}; last real day off={d['last_break']}; tomorrow={d['tomorrow']}; support={d['support']}; weather tomorrow in {CITY}: {wx}.
+
+Score 0-100 (80+ work normally, 60-79 work with care, 40-59 half day, 20-39 full day, <20 needs real rest). Fixed deadlines or critical commitments tomorrow push toward working; a long gap since the last day off pushes toward resting.
+
+Return ONLY JSON:
+{{"wellness_score":int,"leave_type":"full_day_leave|half_day_leave|work_with_care|work_normally","confidence":int,"decision_summary":"2 sentences","do":["3 short items for the chosen path"],"avoid":["3 short items"],"warning_signs":["2 items"],"recovery_estimate":"short phrase","leave_mail":"..."}}
+
+leave_mail: if leave_type is full_day_leave or half_day_leave, write a 2-3 sentence first-person email to my {d['recipient']}. First line 'Subject: Absence tomorrow'. Give only this reason: {d['reason']}. Offer to catch up on anything missed. End with 'Best regards,' and then {name} on the next line. Otherwise use an empty string."""
+
+
+def ask_gemini(d, w):
+    resp = get_client().models.generate_content(
+        model=MODEL,
+        contents=build_prompt(d, w),
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.3,
+            max_output_tokens=800,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
+    )
+    return json.loads(resp.text)
+
+
+def fallback_mail(d, half):
+    when = "the rest of tomorrow" if half else "tomorrow"
+    return (
+        "Subject: Absence tomorrow\n\n"
+        f"Hi,\n\nI need to take {when} off ({d['reason'].lower()}). "
+        "I'll catch up on anything I miss and can be reached if something urgent comes up.\n\n"
+        f"Best regards,\n{d['name'] or '[Your Name]'}"
+    )
+
+
+def fallback(d):
+    score = (
+        100
+        - (d["work"] + d["stress"]) / 2 * 5
+        - (10 - d["energy"]) * 4
+        - (10 - d["sleep"]) * 3
+        - SYMPTOM_PENALTY.get(d["symptoms"], 0)
+    )
+    if d["tomorrow"].startswith(("Fixed", "Critical")):
+        score += 10
+    score = max(5, min(100, int(score)))
+    if score < 25:
+        lt, why = "full_day_leave", "Stress is high and energy is low. A full rest day is the safer call."
+    elif score < 45:
+        lt, why = "half_day_leave", "You're running low. A half day or an early finish would help."
+    elif score < 65:
+        lt, why = "work_with_care", "You can work tomorrow, but protect your energy."
+    else:
+        lt, why = "work_normally", "You look in good shape to work tomorrow."
+    return {
+        "wellness_score": score, "leave_type": lt, "confidence": 70, "decision_summary": why,
+        "do": ["Take a short break every hour", "Do the one or two essential tasks first", "Eat properly and stay hydrated"],
+        "avoid": ["Extra commitments or overtime", "Perfectionism on minor tasks", "Skipping lunch"],
+        "warning_signs": ["Can't focus at all", "Symptoms that keep getting worse"],
+        "recovery_estimate": "1-3 days with proper rest",
+    }
+
+
+def normalise(r, d):
+    lt = r.get("leave_type")
+    lt = lt if lt in TYPES else "work_with_care"
+    out = {
+        "leave_type": lt,
+        "wellness_score": max(0, min(100, int(r.get("wellness_score", 50)))),
+        "confidence": max(0, min(100, int(r.get("confidence", 70)))),
+        "decision_summary": str(r.get("decision_summary", "")),
+        "recovery_estimate": str(r.get("recovery_estimate", "")),
+    }
+    for k in ("do", "avoid", "warning_signs"):
+        out[k] = [str(x) for x in (r.get(k) or [])][:4]
+    mail = str(r.get("leave_mail") or "").strip()
+    if lt in OFF and not mail:
+        mail = fallback_mail(d, half=(lt == "half_day_leave"))
+    out["leave_mail"] = mail if lt in OFF else ""
+    return out
+
+
+def analyze(d, w):
+    try:
+        raw = ask_gemini(d, w)
+    except Exception as e:
+        msg = str(e)
+        if "429" in msg or "quota" in msg.lower():
+            st.info("Free-tier rate limit hit, so this is a quick offline estimate. Try again in a minute.")
+        else:
+            st.warning(f"AI call failed ({msg[:120]}). Showing an offline estimate.")
+        raw = fallback(d)
+    return normalise(raw, d)
+
+
+# ---------- UI ----------
+def render_weather(w):
+    if w:
+        body = (
+            f'<div style="font-size:2rem">{w["icon"]}</div>'
+            f'<b>{w["high"]}°C / {w["low"]}°C</b><br>{esc(w["summary"])} · {w["rain"]}% chance of precipitation'
+        )
+    else:
+        body = "Forecast unavailable"
+    st.markdown(f'<div class="card"><b>Tomorrow in {CITY}</b><br>{body}</div>', unsafe_allow_html=True)
+
+
+def render_result(r):
+    label, color = TYPES[r["leave_type"]]
+    st.markdown(
+        f'<div class="hero" style="background:{color}">'
+        f'<div class="hero-t">{label}</div>'
+        f'<div class="hero-s">{esc(r["decision_summary"])}</div>'
+        f'<div class="hero-c">Wellness score {r["wellness_score"]}/100 · Confidence {r["confidence"]}%</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    off = r["leave_type"] in OFF
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f'<div class="hd">{"Recovery activities" if off else "If you work tomorrow"}</div>', unsafe_allow_html=True)
+        st.markdown("".join(f'<div class="do">{esc(x)}</div>' for x in r["do"]), unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'<div class="hd">{"Avoid during your day off" if off else "Avoid while working"}</div>', unsafe_allow_html=True)
+        st.markdown("".join(f'<div class="dont">{esc(x)}</div>' for x in r["avoid"]), unsafe_allow_html=True)
+
+    if r["warning_signs"]:
+        st.markdown(
+            f'<div class="card"><b>Watch for:</b> {esc(" • ".join(r["warning_signs"]))}</div>',
+            unsafe_allow_html=True,
+        )
+    if r["recovery_estimate"]:
+        st.markdown(
+            f'<div class="card"><b>Expected recovery:</b> {esc(r["recovery_estimate"])}</div>',
+            unsafe_allow_html=True,
+        )
+    if r["leave_mail"]:
+        st.markdown('<div class="hd">📧 Draft email (use the copy icon on the box)</div>', unsafe_allow_html=True)
+        st.code(r["leave_mail"], language=None)
+
 
 def main():
-    # Header with inline styles to ensure visibility
-    st.markdown('<h1 style="font-size: 2.5rem; font-weight: 600; text-align: center; color: #1a1a1a; margin-bottom: 0.5rem; font-family: Lexend Deca, sans-serif;">Should I Take Leave Tomorrow?</h1>', unsafe_allow_html=True)
-    st.markdown('<p style="font-size: 1.2rem; text-align: center; color: #666; margin-bottom: 3rem; font-family: Lexend Deca, sans-serif;">AI-powered decision making for your work-life balance</p>', unsafe_allow_html=True)
-    
-    # Get tomorrow's weather
-    weather = get_weather_tomorrow()
-    
-    # Weather display with inline styles and animation
-    # Determine weather icon and animation based on condition
-    weather_condition_lower = weather['condition'].lower()
-    if 'rain' in weather_condition_lower or 'shower' in weather_condition_lower:
-        weather_icon = "🌧️"
-        animation_class = "rain-animation"
-    elif 'cloud' in weather_condition_lower:
-        weather_icon = "☁️"
-        animation_class = "cloud-animation"
-    elif 'sun' in weather_condition_lower or 'clear' in weather_condition_lower:
-        weather_icon = "☀️"
-        animation_class = "sun-animation"
-    else:
-        weather_icon = "🌤️"
-        animation_class = "default-animation"
-    
-    st.markdown(f'''
-    <style>
-        @keyframes rain-drop {{
-            0% {{ transform: translateY(-5px); opacity: 0.7; }}
-            50% {{ transform: translateY(2px); opacity: 1; }}
-            100% {{ transform: translateY(-5px); opacity: 0.7; }}
-        }}
-        
-        @keyframes cloud-drift {{
-            0% {{ transform: translateX(-3px); }}
-            50% {{ transform: translateX(3px); }}
-            100% {{ transform: translateX(-3px); }}
-        }}
-        
-        @keyframes sun-glow {{
-            0% {{ transform: scale(1); opacity: 0.8; }}
-            50% {{ transform: scale(1.05); opacity: 1; }}
-            100% {{ transform: scale(1); opacity: 0.8; }}
-        }}
-        
-        @keyframes gentle-float {{
-            0% {{ transform: translateY(-2px); }}
-            50% {{ transform: translateY(2px); }}
-            100% {{ transform: translateY(-2px); }}
-        }}
-        
-        .rain-animation {{
-            animation: rain-drop 2s ease-in-out infinite;
-        }}
-        
-        .cloud-animation {{
-            animation: cloud-drift 4s ease-in-out infinite;
-        }}
-        
-        .sun-animation {{
-            animation: sun-glow 3s ease-in-out infinite;
-        }}
-        
-        .default-animation {{
-            animation: gentle-float 3s ease-in-out infinite;
-        }}
-    </style>
-    <div style="background: #f8f9fa; border-radius: 12px; padding: 1.5rem; margin: 1rem 0; color: #1a1a1a; text-align: center; border: 1px solid #dee2e6; font-family: Lexend Deca, sans-serif;">
-        <h3 style="margin: 0; color: #1a1a1a; font-weight: 600; font-family: Lexend Deca, sans-serif;">Tomorrow's Weather in Burnaby</h3>
-        <div style="font-size: 2rem; margin: 0.5rem 0;" class="{animation_class}">{weather_icon}</div>
-        <p style="font-size: 1.1rem; margin: 0.5rem 0; color: #1a1a1a; font-family: Lexend Deca, sans-serif;">
-            <strong style="color: #1a1a1a; font-family: Lexend Deca, sans-serif;">{weather['temp_high']}°C / {weather['temp_low']}°C</strong><br>
-            {weather['condition']} • {weather['rain_chance']}% chance of rain
-        </p>
-    </div>
-    ''', unsafe_allow_html=True)
-    
-    # Input section header
-    st.markdown('<h3 style="color: #1a1a1a; font-family: Lexend Deca, sans-serif; font-weight: 600;">How are you feeling today?</h3>', unsafe_allow_html=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        mood = st.selectbox(
-            "Overall mood",
-            ["Excellent", "Good", "Okay", "Struggling", "Overwhelmed", "Exhausted"],
-            help="How would you describe your general state today?"
+    st.markdown('<div class="ttl">Should I Take Tomorrow Off?</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub">A quick check-in for your work-life balance</div>', unsafe_allow_html=True)
+
+    if get_client() is None:
+        st.error("🔑 Please add GEMINI_API_KEY to Streamlit secrets")
+        st.stop()
+
+    weather = get_weather()
+    render_weather(weather)
+
+    # A form means moving a slider no longer reruns the whole script.
+    with st.form("checkin"):
+        st.markdown('<div class="hd">How are you feeling today?</div>', unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            mood = st.selectbox("Overall mood", ["Excellent", "Good", "Okay", "Struggling", "Overwhelmed", "Exhausted"])
+            energy = st.slider("Energy level", 1, 10, 5, help="1 = drained, 10 = energized")
+            sleep = st.slider("Last night's sleep", 1, 10, 6, help="1 = terrible, 10 = perfect")
+            last_break = st.selectbox(
+                "Last proper day off",
+                ["Never", "6+ months ago", "2-6 months ago", "1-2 months ago", "Within last month"],
+            )
+        with c2:
+            work = st.slider("Workload pressure (research, TA, courses)", 1, 10, 5, help="1 = light, 10 = overwhelming")
+            stress = st.slider("Personal life stress", 1, 10, 4, help="1 = peaceful, 10 = major issues")
+            symptoms = st.selectbox(
+                "Physical symptoms",
+                ["None", "Mild tension/headache", "Moderate discomfort", "Severe symptoms"],
+            )
+            tomorrow = st.selectbox(
+                "Tomorrow's commitments",
+                [
+                    "Flexible: my own research time",
+                    "Some meetings or TA hours",
+                    "Fixed deadline (grading, assignment, submission)",
+                    "Critical: exam, presentation or supervisor deadline",
+                ],
+            )
+        support = st.selectbox(
+            "Support around you (supervisor, lab, friends, family)",
+            ["Strong", "Good", "Limited", "Weak, feeling isolated"],
         )
-        
-        energy = st.slider("Energy level", 1, 10, 5, help="1 = Completely drained, 10 = Highly energized")
-        sleep = st.slider("Last night's sleep quality", 1, 10, 6, help="1 = Terrible, 10 = Perfect rest")
-        
-        leave_balance = st.selectbox(
-            "Leave balance remaining",
-            ["20+ days", "15-20 days", "10-15 days", "5-10 days", "1-5 days", "No leave left"],
-            help="How many days of leave do you have remaining?"
-        )
-        
-    with col2:
-        work_pressure = st.slider("Work pressure level", 1, 10, 5, help="1 = Very light, 10 = Overwhelming")
-        personal_stress = st.slider("Personal life stress", 1, 10, 4, help="1 = Very peaceful, 10 = Major issues")
-        
-        physical_symptoms = st.selectbox(
-            "Physical symptoms",
-            ["None", "Mild tension/headache", "Moderate discomfort", "Severe symptoms"]
-        )
-        
-        last_break = st.selectbox(
-            "When did you last take a day off?",
-            ["Never", "6+ months ago", "2-6 months ago", "1-2 months ago", "Within last month"]
-        )
-    
-    tomorrow_importance = st.selectbox(
-        "How critical is tomorrow's work?",
-        ["Low priority - routine tasks", "Medium - some important items", "High - major deadlines", "Critical - cannot be postponed"]
-    )
-    
-    support = st.selectbox(
-        "Your support system",
-        ["Strong - great family/friend support", "Good - some supportive people", "Limited - few people to talk to", "Weak - feeling quite isolated"]
-    )
-    
-    # Analysis button
-    if st.button("Get My Personalized Recommendation", type="primary"):
+        with st.expander("Email settings (used only if time off is recommended)"):
+            recipient = st.selectbox("Email to", ["supervisor", "course instructor", "TA coordinator", "research group"])
+            reason = st.selectbox("Reason to give", ["Not feeling well", "Need a rest day", "Personal matter"])
+            name = st.text_input("Your name (for the sign-off)")
+        go = st.form_submit_button("Get my recommendation", type="primary", use_container_width=True)
+
+    if go:
         data = {
-            'mood': mood,
-            'energy': energy,
-            'sleep': sleep,
-            'work_pressure': work_pressure,
-            'personal_stress': personal_stress,
-            'physical_symptoms': physical_symptoms,
-            'last_break': last_break,
-            'tomorrow_importance': tomorrow_importance,
-            'support': support,
-            'leave_balance': leave_balance
+            "mood": mood, "energy": energy, "sleep": sleep, "work": work, "stress": stress,
+            "symptoms": symptoms, "last_break": last_break, "tomorrow": tomorrow, "support": support,
+            "recipient": recipient, "reason": reason, "name": name.strip(),
         }
-        
-        # Minimal loading animation
-        loading_placeholder = st.empty()
-        loading_placeholder.markdown("""
-        <div style="text-align: center; padding: 1rem; background: #f8f9fa; border-radius: 8px; margin: 1rem 0; border: 1px solid #dee2e6;">
-            <div style="display: inline-block; width: 16px; height: 16px; border: 2px solid #007aff; border-radius: 50%; border-top-color: transparent; animation: spin 1s linear infinite; margin-right: 8px;"></div>
-            <span style="color: #1a1a1a; font-family: 'Lexend Deca', sans-serif; font-size: 0.9rem;">Analyzing...</span>
-        </div>
-        <style>
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        time.sleep(1.0)  # Reduced delay for better UX
-        analysis = analyze_leave_decision(data, weather)
-        
-        # Clear loading animation
-        loading_placeholder.empty()
-        
-        # Save assessment
-        entry = {
-            **data,
-            'date': datetime.now().strftime('%Y-%m-%d'),
-            'wellness_score': analysis['wellness_score'],
-            'recommendation': analysis['leave_type']
-        }
-        st.session_state.assessments.insert(0, entry)
-        st.session_state.assessments = st.session_state.assessments[:30]
-        
-        # Persist analysis and mail in session, then render via a pure function so buttons don't collapse the UI
-        st.session_state.analysis = analysis
-        st.session_state.generated_leave_mail = generate_leave_mail() if analysis['leave_type'] in ['full_day_leave', 'half_day_leave'] else None
-        render_analysis_ui(st.session_state.analysis, st.session_state.generated_leave_mail)
-    
-    # Footer
+        with st.spinner("Thinking…"):
+            st.session_state.result = analyze(data, weather)
+
+    if st.session_state.get("result"):
+        render_result(st.session_state.result)
+
     st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; color: #666; font-size: 0.9rem; padding: 1.5rem; font-family: Lexend Deca, sans-serif;">
-        <strong style="color: #666; font-family: Lexend Deca, sans-serif;">Your wellbeing matters.</strong> This tool provides guidance, not medical advice.<br>
-        For serious mental health concerns, please consult a healthcare professional.
-    </div>
-    """, unsafe_allow_html=True)
-
-if __name__ == "__main__":
-    main()
+    st.markdown(
+        '<div class="foot"><b>Your wellbeing matters.</b> This is guidance, not medical advice.<br>'
+        "If you're struggling, SFU Student Health &amp; Counselling can help, and in Canada you can call or text 9-8-8 any time.</div>",
+        unsafe_allow_html=True,
+    )
 
 
-
-
+main()
