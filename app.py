@@ -1,4 +1,3 @@
-"""Should I take tomorrow off?"""
 import html
 import json
 
@@ -7,8 +6,7 @@ import streamlit as st
 from google import genai
 from google.genai import types
 
-# Flash-Lite with thinking switched off is the fastest option on the free tier.
-MODEL = "gemini-2.5-flash-lite"
+MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"]
 LAT, LON, CITY = 49.2488, -122.9805, "Burnaby"
 
 TYPES = {
@@ -53,19 +51,17 @@ label, [data-testid="stWidgetLabel"] p {color:#1a1a1a !important; font-weight:50
 esc = html.escape
 
 
-# ---------- Gemini client (created once per server, not per rerun) ----------
 @st.cache_resource
 def get_client():
     try:
         return genai.Client(
             api_key=st.secrets["GEMINI_API_KEY"],
-            http_options=types.HttpOptions(timeout=20_000),  # ms; fail fast to fallback
+            http_options=types.HttpOptions(timeout=20_000),
         )
     except Exception:
         return None
 
 
-# ---------- Weather (cached 30 min; failures are not cached) ----------
 @st.cache_data(ttl=1800, show_spinner=False)
 def _fetch_weather(key):
     r = requests.get(
@@ -74,7 +70,7 @@ def _fetch_weather(key):
         timeout=(2, 3),
     )
     r.raise_for_status()
-    d = r.json()["daily"]["data"][1]  # index 0 = today, 1 = tomorrow
+    d = r.json()["daily"]["data"][1]
     return {
         "high": round(d.get("temperatureHigh", d.get("temperatureMax", 0))),
         "low": round(d.get("temperatureLow", d.get("temperatureMin", 0))),
@@ -92,7 +88,6 @@ def get_weather():
         return None
 
 
-# ---------- Analysis: ONE Gemini call returns the verdict and the email ----------
 def build_prompt(d, w):
     wx = f"{w['high']}/{w['low']}°C, {w['summary']}, {w['rain']}% precipitation" if w else "unknown"
     name = d["name"] or "[Your Name]"
@@ -108,18 +103,42 @@ Return ONLY JSON:
 leave_mail: if leave_type is full_day_leave or half_day_leave, write a 2-3 sentence first-person email to my {d['recipient']}. First line 'Subject: Absence tomorrow'. Give only this reason: {d['reason']}. Offer to catch up on anything missed. End with 'Best regards,' and then {name} on the next line. Otherwise use an empty string."""
 
 
+@st.cache_resource
+def _working_model():
+    return {"name": None}
+
+
 def ask_gemini(d, w):
-    resp = get_client().models.generate_content(
-        model=MODEL,
-        contents=build_prompt(d, w),
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.3,
-            max_output_tokens=800,
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-        ),
-    )
-    return json.loads(resp.text)
+    client = get_client()
+    prompt = build_prompt(d, w)
+    state = _working_model()
+    order = ([state["name"]] if state["name"] else []) + [m for m in MODELS if m != state["name"]]
+
+    def cfg(thinking):
+        kw = dict(response_mime_type="application/json", temperature=0.3, max_output_tokens=1200)
+        if thinking:
+            kw["thinking_config"] = types.ThinkingConfig(**thinking)
+        return types.GenerateContentConfig(**kw)
+
+    thinking_options = [{"thinking_level": "minimal"}, {"thinking_budget": 0}, None]
+    last = None
+    for name in order:
+        for th in thinking_options:
+            try:
+                resp = client.models.generate_content(model=name, contents=prompt, config=cfg(th))
+                state["name"] = name
+                return json.loads(resp.text)
+            except Exception as e:
+                last = e
+                msg = str(e)
+                if "404" in msg or "NOT_FOUND" in msg:
+                    break
+                if "429" in msg or "quota" in msg.lower():
+                    raise
+                if "thinking" in msg.lower() or "INVALID_ARGUMENT" in msg or isinstance(e, (TypeError, ValueError)):
+                    continue
+                raise
+    raise last or RuntimeError("No Gemini model available")
 
 
 def fallback_mail(d, half):
@@ -192,7 +211,6 @@ def analyze(d, w):
     return normalise(raw, d)
 
 
-# ---------- UI ----------
 def render_weather(w):
     if w:
         body = (
@@ -249,7 +267,6 @@ def main():
     weather = get_weather()
     render_weather(weather)
 
-    # A form means moving a slider no longer reruns the whole script.
     with st.form("checkin"):
         st.markdown('<div class="hd">How are you feeling today?</div>', unsafe_allow_html=True)
         c1, c2 = st.columns(2)
